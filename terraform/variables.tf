@@ -29,3 +29,21 @@ variable "tags" {
     Project = "personal-data-tracker"
   }
 }
+
+variable "twilio_auth_token" {
+  description = "Twilio Auth Token, used to validate the X-Twilio-Signature header on inbound SMS webhooks. Supply via terraform.tfvars (gitignored) or TF_VAR_twilio_auth_token -- never commit it."
+  type        = string
+  sensitive   = true
+}
+
+variable "timezone" {
+  description = "IANA timezone used to resolve relative dates ('today', 'yesterday') in incoming SMS messages"
+  type        = string
+  default     = "America/New_York"
+}
+
+variable "bedrock_model_id" {
+  description = "Bedrock model ID for Claude Haiku used by the Twilio SMS webhook. Verify this against the models enabled for your account/region in the Bedrock console before deploying -- it is not validated at plan time."
+  type        = string
+  default     = "us.anthropic.claude-haiku-4-5-20251001-v1:0"
+}

@@ -4,7 +4,7 @@
 # DynamoDB lock table needed.
 terraform {
   backend "s3" {
-    bucket       = "REPLACE_WITH_YOUR_STATE_BUCKET_NAME"
+    bucket       = "personal-data-tf-state"
     key          = "personal-data-backend/terraform.tfstate"
     region       = "us-east-2"
     use_lockfile = true

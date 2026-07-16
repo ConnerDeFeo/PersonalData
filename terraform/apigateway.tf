@@ -53,6 +53,34 @@ resource "aws_api_gateway_integration" "root_any" {
   uri                     = aws_lambda_function.records_api.invoke_arn
 }
 
+# Twilio's inbound-SMS webhook. Twilio can't send an x-api-key header, so
+# this route is exempt from api_key_required; authenticity is instead
+# enforced inside the Lambda via X-Twilio-Signature validation. This is a
+# fixed path, so API Gateway resolves it here in preference to the
+# {proxy+} catch-all above.
+resource "aws_api_gateway_resource" "twilio" {
+  rest_api_id = aws_api_gateway_rest_api.records_api.id
+  parent_id   = aws_api_gateway_rest_api.records_api.root_resource_id
+  path_part   = "twilio"
+}
+
+resource "aws_api_gateway_method" "twilio_post" {
+  rest_api_id      = aws_api_gateway_rest_api.records_api.id
+  resource_id      = aws_api_gateway_resource.twilio.id
+  http_method      = "POST"
+  authorization    = "NONE"
+  api_key_required = false
+}
+
+resource "aws_api_gateway_integration" "twilio_post" {
+  rest_api_id             = aws_api_gateway_rest_api.records_api.id
+  resource_id             = aws_api_gateway_resource.twilio.id
+  http_method             = aws_api_gateway_method.twilio_post.http_method
+  integration_http_method = "POST"
+  type                    = "AWS_PROXY"
+  uri                     = aws_lambda_function.twilio_webhook.invoke_arn
+}
+
 resource "aws_api_gateway_deployment" "records_api" {
   rest_api_id = aws_api_gateway_rest_api.records_api.id
 
@@ -63,6 +91,9 @@ resource "aws_api_gateway_deployment" "records_api" {
       aws_api_gateway_integration.proxy_any.id,
       aws_api_gateway_method.root_any.id,
       aws_api_gateway_integration.root_any.id,
+      aws_api_gateway_resource.twilio.id,
+      aws_api_gateway_method.twilio_post.id,
+      aws_api_gateway_integration.twilio_post.id,
     ]))
   }
 
@@ -73,6 +104,7 @@ resource "aws_api_gateway_deployment" "records_api" {
   depends_on = [
     aws_api_gateway_integration.proxy_any,
     aws_api_gateway_integration.root_any,
+    aws_api_gateway_integration.twilio_post,
   ]
 }
 
