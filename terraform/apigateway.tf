@@ -12,42 +12,57 @@ resource "aws_api_gateway_resource" "proxy" {
   path_part   = "{proxy+}"
 }
 
-# ANY on the {proxy+} resource covers /records, /records/{date}, /records/{date}/{attr}
-resource "aws_api_gateway_method" "proxy_any" {
+# One method+integration per HTTP verb on {proxy+}, so GET can be public
+# (the dashboard needs no API key) while writes stay keyed.
+locals {
+  proxy_methods = {
+    GET    = false # public
+    POST   = true
+    PUT    = true
+    PATCH  = true
+    DELETE = true
+  }
+}
+
+resource "aws_api_gateway_method" "proxy" {
+  for_each = local.proxy_methods
+
   rest_api_id      = aws_api_gateway_rest_api.records_api.id
   resource_id      = aws_api_gateway_resource.proxy.id
-  http_method      = "ANY"
+  http_method      = each.key
   authorization    = "NONE"
-  api_key_required = true
+  api_key_required = each.value
 
   request_parameters = {
     "method.request.path.proxy" = true
   }
 }
 
-resource "aws_api_gateway_integration" "proxy_any" {
+resource "aws_api_gateway_integration" "proxy" {
+  for_each = local.proxy_methods
+
   rest_api_id             = aws_api_gateway_rest_api.records_api.id
   resource_id             = aws_api_gateway_resource.proxy.id
-  http_method             = aws_api_gateway_method.proxy_any.http_method
+  http_method             = aws_api_gateway_method.proxy[each.key].http_method
   integration_http_method = "POST" # Lambda proxy integrations are always invoked via POST
   type                    = "AWS_PROXY"
   uri                     = aws_lambda_function.records_api.invoke_arn
 }
 
-# ANY on the root resource ("/") so the API doesn't 403/404 confusingly if
+# GET on the root resource ("/") so the API doesn't 403/404 confusingly if
 # someone hits the base URL directly. Not part of the documented contract.
-resource "aws_api_gateway_method" "root_any" {
+resource "aws_api_gateway_method" "root_get" {
   rest_api_id      = aws_api_gateway_rest_api.records_api.id
   resource_id      = aws_api_gateway_rest_api.records_api.root_resource_id
-  http_method      = "ANY"
+  http_method      = "GET"
   authorization    = "NONE"
-  api_key_required = true
+  api_key_required = false
 }
 
-resource "aws_api_gateway_integration" "root_any" {
+resource "aws_api_gateway_integration" "root_get" {
   rest_api_id             = aws_api_gateway_rest_api.records_api.id
   resource_id             = aws_api_gateway_rest_api.records_api.root_resource_id
-  http_method             = aws_api_gateway_method.root_any.http_method
+  http_method             = aws_api_gateway_method.root_get.http_method
   integration_http_method = "POST"
   type                    = "AWS_PROXY"
   uri                     = aws_lambda_function.records_api.invoke_arn
@@ -87,10 +102,10 @@ resource "aws_api_gateway_deployment" "records_api" {
   triggers = {
     redeployment = sha1(jsonencode([
       aws_api_gateway_resource.proxy.id,
-      aws_api_gateway_method.proxy_any.id,
-      aws_api_gateway_integration.proxy_any.id,
-      aws_api_gateway_method.root_any.id,
-      aws_api_gateway_integration.root_any.id,
+      values(aws_api_gateway_method.proxy)[*].id,
+      values(aws_api_gateway_integration.proxy)[*].id,
+      aws_api_gateway_method.root_get.id,
+      aws_api_gateway_integration.root_get.id,
       aws_api_gateway_resource.twilio.id,
       aws_api_gateway_method.twilio_post.id,
       aws_api_gateway_integration.twilio_post.id,
@@ -102,8 +117,8 @@ resource "aws_api_gateway_deployment" "records_api" {
   }
 
   depends_on = [
-    aws_api_gateway_integration.proxy_any,
-    aws_api_gateway_integration.root_any,
+    aws_api_gateway_integration.proxy,
+    aws_api_gateway_integration.root_get,
     aws_api_gateway_integration.twilio_post,
   ]
 }

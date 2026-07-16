@@ -31,6 +31,8 @@ from boto3.dynamodb.conditions import Attr
 
 DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
+ALLOWED_ATTRS = ("hours_worked", "hours_worked_out", "hours_reading", "weight", "calories")
+
 dynamodb = boto3.resource("dynamodb")
 table = dynamodb.Table(os.environ["TABLE_NAME"])
 
@@ -120,6 +122,16 @@ def _validate_date(date_value):
     return date_value
 
 
+def _validate_attrs(body):
+    attrs = {k: v for k, v in body.items() if k != "date"}
+    for k, v in attrs.items():
+        if k not in ALLOWED_ATTRS:
+            raise ApiError(400, f"Unknown attribute '{k}'. Allowed: {', '.join(ALLOWED_ATTRS)}")
+        if isinstance(v, bool) or not isinstance(v, (int, float)):
+            raise ApiError(400, f"Attribute '{k}' must be a number")
+    return attrs
+
+
 # ---------------------------------------------------------------------------
 # Route handlers
 # ---------------------------------------------------------------------------
@@ -169,6 +181,7 @@ def get_record(date):
 def create_record(body):
     date = body.get("date")
     _validate_date(date)
+    _validate_attrs(body)
     item = _to_dynamo(body)
     item["date"] = date
     table.put_item(Item=item)
@@ -179,6 +192,7 @@ def replace_record(date, body):
     _validate_date(date)
     if "date" in body and body["date"] != date:
         raise ApiError(400, "date in body must match date in path")
+    _validate_attrs(body)
     item = _to_dynamo(body)
     item["date"] = date
     table.put_item(Item=item)
@@ -190,7 +204,7 @@ def patch_record(date, body):
     # record creates one with just the given attributes, rather than 404ing.
     # For a personal tracker this is treated as a convenience, not a bug.
     _validate_date(date)
-    attrs = {k: v for k, v in body.items() if k != "date"}
+    attrs = _validate_attrs(body)
     if not attrs:
         raise ApiError(400, "No attributes provided to update")
 
@@ -228,6 +242,8 @@ def delete_attribute(date, attr):
     _validate_date(date)
     if attr == "date":
         raise ApiError(400, "Cannot remove the date attribute")
+    if attr not in ALLOWED_ATTRS:
+        raise ApiError(400, f"Unknown attribute '{attr}'. Allowed: {', '.join(ALLOWED_ATTRS)}")
 
     existing = table.get_item(Key={"date": date}).get("Item")
     if not existing:

@@ -41,6 +41,7 @@ BEDROCK_MODEL_ID = os.environ["BEDROCK_MODEL_ID"]
 RECORDS_API_FUNCTION_NAME = os.environ["RECORDS_API_FUNCTION_NAME"]
 TWILIO_AUTH_TOKEN = os.environ["TWILIO_AUTH_TOKEN"]
 TIMEZONE = os.environ["TIMEZONE"]
+ALLOWED_FROM_NUMBER = os.environ["ALLOWED_FROM_NUMBER"]
 
 UPDATE_TOOL = {
     "name": "update_day_record",
@@ -60,10 +61,18 @@ UPDATE_TOOL = {
                 "type": "object",
                 "description": (
                     "Attributes to set on that day's record, e.g. "
-                    '{"hoursWorked": 8}. Merged into any existing record for '
+                    '{"hours_worked": 8}. Merged into any existing record for '
                     "that date -- existing attributes not mentioned are left "
                     "untouched."
                 ),
+                "additionalProperties": False,
+                "properties": {
+                    "hours_worked": {"type": "number"},
+                    "hours_worked_out": {"type": "number"},
+                    "hours_reading": {"type": "number"},
+                    "weight": {"type": "number"},
+                    "calories": {"type": "number"},
+                },
             },
         },
         "required": ["date", "attributes"],
@@ -192,16 +201,18 @@ def _text_from(content_blocks):
 
 def _handle_sms(body_text, today):
     system_prompt = (
-        "You track the user's personal daily data (hours worked, weight, "
-        "calories, notes, or any other attribute) via SMS. "
+        "You track the user's personal daily data via SMS. The only "
+        "attributes you may record are: hours_worked, hours_worked_out, "
+        "hours_reading, weight, calories -- all numbers. "
         f"Today's date is {today} (already resolved in the user's local "
         "timezone -- use it directly for phrases like 'today', 'yesterday', "
         "or a specific weekday; do not attempt to compute dates yourself). "
         "When the message describes something to record, call "
         "update_day_record with the correct date and attributes, then give a "
         "short, friendly one-sentence confirmation summarizing what was "
-        "recorded for that date. If nothing needs recording, reply "
-        "conversationally without calling the tool."
+        "recorded for that date. If nothing needs recording, or it isn't one "
+        "of the five tracked attributes, reply conversationally without "
+        "calling the tool."
     )
 
     messages = [{"role": "user", "content": [{"type": "text", "text": body_text}]}]
@@ -252,8 +263,14 @@ def lambda_handler(event, context):
         signature = _get_header(event, "X-Twilio-Signature")
         url = _request_url(event)
         _validate_twilio_signature(url, params, signature)
-    except TwilioAuthError:
-        return {"statusCode": 403, "headers": {"Content-Type": "text/plain"}, "body": "Invalid signature"}
+        # A valid Twilio signature only proves the request came from Twilio's
+        # servers, not that it came from you specifically -- anyone who texts
+        # this number would otherwise pass. Restrict to one sender.
+        if params.get("From") != ALLOWED_FROM_NUMBER:
+            raise TwilioAuthError("Sender not allowed")
+    except TwilioAuthError as e:
+        print(f"Rejected request: {e}")
+        return {"statusCode": 403, "headers": {"Content-Type": "text/plain"}, "body": "Forbidden"}
     except Exception as e:  # noqa: BLE001
         print(f"Unhandled error during request validation: {e!r}")
         return {"statusCode": 403, "headers": {"Content-Type": "text/plain"}, "body": "Bad request"}

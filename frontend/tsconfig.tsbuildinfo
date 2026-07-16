@@ -1,0 +1,1 @@
+{"root":["./src/app.tsx","./src/api.ts","./src/colors.ts","./src/main.tsx","./src/stats.ts","./src/vite-env.d.ts","./src/components/daydetail.tsx","./src/components/hoursdonut.tsx","./src/components/trendcharts.tsx","./src/components/weekrow.tsx","./src/components/weekdayaverages.tsx"],"version":"5.9.3"}

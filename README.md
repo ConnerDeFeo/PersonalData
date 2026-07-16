@@ -7,12 +7,12 @@ Gateway and backed by a single Python Lambda. Provisioned entirely with Terrafor
 ## Architecture
 
 - **DynamoDB** table `personal-data`: partition key `date` (`YYYY-MM-DD`), one item per
-  day, on-demand billing. Attributes are dynamic — store whatever you want.
+  day, on-demand billing. Attributes are a **fixed schema** — see below.
 - **Lambda** (`src/handler.py`, Python 3.12): single function that routes all requests
-  internally by HTTP method + path.
-- **API Gateway** (REST API): a single `ANY /{proxy+}` catch-all forwards everything to
-  the Lambda. Every request requires an `x-api-key` header (API Gateway API key + usage
-  plan).
+  internally by HTTP method + path, and enforces the fixed schema for all writes.
+- **API Gateway** (REST API): per-method routes on `{proxy+}` — `GET` is public (no key
+  required, so the dashboard needs no secret); `POST`/`PUT`/`PATCH`/`DELETE` require an
+  `x-api-key` header (API Gateway API key + usage plan).
 - **Twilio SMS webhook** (`src/twilio_handler.py`, Python 3.12): a second Lambda behind
   `POST /twilio` on the same API (no API key -- Twilio can't send one; the request is
   instead authenticated via the `X-Twilio-Signature` header). Texting the Twilio number
@@ -21,6 +21,14 @@ Gateway and backed by a single Python Lambda. Provisioned entirely with Terrafor
   has to be shared with Twilio) to upsert that day's DynamoDB record, then replies via
   SMS (TwiML) with a summary. Relative dates ("today", "yesterday") are resolved
   server-side using the `timezone` Terraform variable.
+- **Dashboard** (`frontend/`, React + Vite + TS + Tailwind): a read-only visualization
+  of the data, run locally. See "Frontend" below.
+
+## Fixed schema
+
+Only these five numeric attributes may be written to a record, by anyone (HTTP or SMS):
+`hours_worked`, `hours_worked_out`, `hours_reading`, `weight`, `calories`. Any other
+attribute name, or a non-number value, is rejected with `400`.
 
 ## Prerequisites
 
@@ -64,10 +72,16 @@ The Twilio webhook needs a few things Terraform can't provision for you:
 Create `terraform/terraform.tfvars` (gitignored -- never commit it) with at least:
 
 ```hcl
-twilio_auth_token = "your-twilio-auth-token"
-# timezone         = "America/Los_Angeles"          # optional override
-# bedrock_model_id = "anthropic.claude-haiku-..."   # optional override
+twilio_auth_token   = "your-twilio-auth-token"
+allowed_from_number = "+15551234567"                # your phone number, E.164 format
+# timezone          = "America/Los_Angeles"          # optional override
+# bedrock_model_id  = "anthropic.claude-haiku-..."   # optional override
 ```
+
+`allowed_from_number` matters: a valid `X-Twilio-Signature` only proves a request came from
+Twilio's servers, not that it came from *you* specifically -- anyone who texts your Twilio
+number would otherwise be able to trigger it. The webhook rejects any signed request whose
+`From` doesn't match this number.
 
 (Alternatively, set `TF_VAR_twilio_auth_token` in your shell instead of a `.tfvars`
 file.)
@@ -109,22 +123,22 @@ API_KEY="<value from the get-api-key command above>"
 ```bash
 curl -X POST "$API_URL/records" \
   -H "x-api-key: $API_KEY" -H "Content-Type: application/json" \
-  -d '{"date":"2026-07-16","weight":175.5,"calories":2200,"hoursWorked":8,"notes":"felt good"}'
+  -d '{"date":"2026-07-16","weight":175.5,"calories":2200,"hours_worked":8}'
 ```
 
-**Get a single day**
+**Get a single day** (public, no key needed)
 ```bash
-curl "$API_URL/records/2026-07-16" -H "x-api-key: $API_KEY"
+curl "$API_URL/records/2026-07-16"
 ```
 
-**List all records**
+**List all records** (public, no key needed)
 ```bash
-curl "$API_URL/records" -H "x-api-key: $API_KEY"
+curl "$API_URL/records"
 ```
 
-**List records in a date range**
+**List records in a date range** (public, no key needed)
 ```bash
-curl "$API_URL/records?start=2026-07-01&end=2026-07-31" -H "x-api-key: $API_KEY"
+curl "$API_URL/records?start=2026-07-01&end=2026-07-31"
 ```
 
 **Merge/patch specific attributes (leaves others untouched)**
@@ -164,12 +178,29 @@ i worked 8 hours yesterday, forgot to log it
 
 You'll get an SMS reply summarizing what was recorded for that date.
 
+## Frontend
+
+Read-only dashboard, run locally against your deployed API.
+
+```bash
+cd frontend
+cp .env.example .env   # set VITE_API_BASE to your invoke_url
+npm install
+npm run dev
+```
+
+Visualizes: the current week's raw values, an all-time hours split donut, trend lines
+for hours worked/weight/calories, all-time weekday averages, and a date picker for any
+single day's record. Fetches `GET /records` once (public, no key) and derives
+everything client-side.
+
 ## Notes
 
-- Requests without a valid `x-api-key` header are rejected by API Gateway with 403
-  before ever reaching the Lambda.
-- Any JSON attribute name/value is accepted — `weight`, `calories`, `hoursWorked`, and
-  `notes` are just the ones this project was built around, not a fixed schema.
+- Writes (`POST`/`PUT`/`PATCH`/`DELETE`) require a valid `x-api-key` header and are
+  rejected by API Gateway with 403 before ever reaching the Lambda. `GET` is public.
+- Only the five fixed attributes above may be written — any other attribute name, or a
+  non-number value, is rejected with 400 (enforced in `src/handler.py`, the single
+  choke point for both the HTTP API and the Twilio/SMS path).
 - `GET /records` uses a DynamoDB `Scan` (no pagination) — fine at personal-data volumes.
 - The Twilio webhook (`POST /twilio`) validates `X-Twilio-Signature` and rejects
   requests that don't come from Twilio with a 403, before any Bedrock or DynamoDB work
