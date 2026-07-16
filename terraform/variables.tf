@@ -42,6 +42,12 @@ variable "timezone" {
   default     = "America/New_York"
 }
 
+variable "allowed_from_number" {
+  description = "The only phone number (E.164 format, e.g. +15551234567) allowed to trigger the Twilio SMS webhook. A genuinely Twilio-signed request from any other sender is rejected."
+  type        = string
+  sensitive   = true
+}
+
 variable "bedrock_model_id" {
   description = "Bedrock model ID for Claude Haiku used by the Twilio SMS webhook. Verify this against the models enabled for your account/region in the Bedrock console before deploying -- it is not validated at plan time."
   type        = string

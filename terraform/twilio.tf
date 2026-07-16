@@ -23,6 +23,7 @@ resource "aws_lambda_function" "twilio_webhook" {
       BEDROCK_MODEL_ID          = var.bedrock_model_id
       TWILIO_AUTH_TOKEN         = var.twilio_auth_token
       TIMEZONE                  = var.timezone
+      ALLOWED_FROM_NUMBER       = var.allowed_from_number
     }
   }
 
