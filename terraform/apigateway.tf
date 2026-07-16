@@ -12,38 +12,25 @@ resource "aws_api_gateway_resource" "proxy" {
   path_part   = "{proxy+}"
 }
 
-# One method+integration per HTTP verb on {proxy+}, so GET can be public
-# (the dashboard needs no API key) while writes stay keyed.
-locals {
-  proxy_methods = {
-    GET    = false # public
-    POST   = true
-    PUT    = true
-    PATCH  = true
-    DELETE = true
-  }
-}
-
-resource "aws_api_gateway_method" "proxy" {
-  for_each = local.proxy_methods
-
+# GET only, public -- writes aren't exposed over HTTP at all. The only way to
+# add/edit data is via SMS (twilio_handler.py invokes this Lambda directly,
+# bypassing API Gateway -- see its module docstring).
+resource "aws_api_gateway_method" "proxy_get" {
   rest_api_id      = aws_api_gateway_rest_api.records_api.id
   resource_id      = aws_api_gateway_resource.proxy.id
-  http_method      = each.key
+  http_method      = "GET"
   authorization    = "NONE"
-  api_key_required = each.value
+  api_key_required = false
 
   request_parameters = {
     "method.request.path.proxy" = true
   }
 }
 
-resource "aws_api_gateway_integration" "proxy" {
-  for_each = local.proxy_methods
-
+resource "aws_api_gateway_integration" "proxy_get" {
   rest_api_id             = aws_api_gateway_rest_api.records_api.id
   resource_id             = aws_api_gateway_resource.proxy.id
-  http_method             = aws_api_gateway_method.proxy[each.key].http_method
+  http_method             = aws_api_gateway_method.proxy_get.http_method
   integration_http_method = "POST" # Lambda proxy integrations are always invoked via POST
   type                    = "AWS_PROXY"
   uri                     = aws_lambda_function.records_api.invoke_arn
@@ -68,11 +55,9 @@ resource "aws_api_gateway_integration" "root_get" {
   uri                     = aws_lambda_function.records_api.invoke_arn
 }
 
-# Twilio's inbound-SMS webhook. Twilio can't send an x-api-key header, so
-# this route is exempt from api_key_required; authenticity is instead
-# enforced inside the Lambda via X-Twilio-Signature validation. This is a
-# fixed path, so API Gateway resolves it here in preference to the
-# {proxy+} catch-all above.
+# Twilio's inbound-SMS webhook -- the only path that can write data. Twilio
+# can't send an x-api-key header, so this route has none; authenticity is
+# enforced inside the Lambda via X-Twilio-Signature + sender-number checks.
 resource "aws_api_gateway_resource" "twilio" {
   rest_api_id = aws_api_gateway_rest_api.records_api.id
   parent_id   = aws_api_gateway_rest_api.records_api.root_resource_id
@@ -102,8 +87,8 @@ resource "aws_api_gateway_deployment" "records_api" {
   triggers = {
     redeployment = sha1(jsonencode([
       aws_api_gateway_resource.proxy.id,
-      values(aws_api_gateway_method.proxy)[*].id,
-      values(aws_api_gateway_integration.proxy)[*].id,
+      aws_api_gateway_method.proxy_get.id,
+      aws_api_gateway_integration.proxy_get.id,
       aws_api_gateway_method.root_get.id,
       aws_api_gateway_integration.root_get.id,
       aws_api_gateway_resource.twilio.id,
@@ -117,7 +102,7 @@ resource "aws_api_gateway_deployment" "records_api" {
   }
 
   depends_on = [
-    aws_api_gateway_integration.proxy,
+    aws_api_gateway_integration.proxy_get,
     aws_api_gateway_integration.root_get,
     aws_api_gateway_integration.twilio_post,
   ]
@@ -128,26 +113,4 @@ resource "aws_api_gateway_stage" "records_api" {
   rest_api_id   = aws_api_gateway_rest_api.records_api.id
   stage_name    = var.stage_name
   tags          = var.tags
-}
-
-resource "aws_api_gateway_api_key" "personal" {
-  name = "${var.project_name}-key"
-  tags = var.tags
-}
-
-resource "aws_api_gateway_usage_plan" "personal" {
-  name = "${var.project_name}-usage-plan"
-
-  api_stages {
-    api_id = aws_api_gateway_rest_api.records_api.id
-    stage  = aws_api_gateway_stage.records_api.stage_name
-  }
-
-  tags = var.tags
-}
-
-resource "aws_api_gateway_usage_plan_key" "personal" {
-  key_id        = aws_api_gateway_api_key.personal.id
-  key_type      = "API_KEY"
-  usage_plan_id = aws_api_gateway_usage_plan.personal.id
 }

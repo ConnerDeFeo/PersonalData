@@ -10,23 +10,23 @@ Gateway and backed by a single Python Lambda. Provisioned entirely with Terrafor
   day, on-demand billing. Attributes are a **fixed schema** — see below.
 - **Lambda** (`src/handler.py`, Python 3.12): single function that routes all requests
   internally by HTTP method + path, and enforces the fixed schema for all writes.
-- **API Gateway** (REST API): per-method routes on `{proxy+}` — `GET` is public (no key
-  required, so the dashboard needs no secret); `POST`/`PUT`/`PATCH`/`DELETE` require an
-  `x-api-key` header (API Gateway API key + usage plan).
+- **API Gateway** (REST API): `GET` only on `{proxy+}` and `/`, public, no key required.
+  There is no write route over HTTP — writes aren't exposed to the internet at all.
 - **Twilio SMS webhook** (`src/twilio_handler.py`, Python 3.12): a second Lambda behind
   `POST /twilio` on the same API (no API key -- Twilio can't send one; the request is
-  instead authenticated via the `X-Twilio-Signature` header). Texting the Twilio number
-  something like "worked 8 hours today" calls Claude Haiku on Bedrock, which uses a
-  tool to invoke the `records-api` Lambda directly (not over HTTP, so the API key never
-  has to be shared with Twilio) to upsert that day's DynamoDB record, then replies via
-  SMS (TwiML) with a summary. Relative dates ("today", "yesterday") are resolved
-  server-side using the `timezone` Terraform variable.
+  instead authenticated via the `X-Twilio-Signature` header plus an allow-listed sender
+  number). Texting the Twilio number something like "worked 8 hours today" calls Claude
+  Haiku on Bedrock, which uses a tool to invoke the `records-api` Lambda directly (a raw
+  `lambda:InvokeFunction` call, bypassing API Gateway entirely) to upsert that day's
+  DynamoDB record, then replies via SMS (TwiML) with a summary. Relative dates ("today",
+  "yesterday") are resolved server-side using the `timezone` Terraform variable. **This
+  is the only way to write data** — there is no API key and no HTTP write endpoint.
 - **Dashboard** (`frontend/`, React + Vite + TS + Tailwind): a read-only visualization
   of the data, run locally. See "Frontend" below.
 
 ## Fixed schema
 
-Only these five numeric attributes may be written to a record, by anyone (HTTP or SMS):
+Only these five numeric attributes may be written to a record, via SMS:
 `hours_worked`, `hours_worked_out`, `hours_reading`, `weight`, `calories`. Any other
 attribute name, or a non-number value, is rejected with `400`.
 
@@ -36,7 +36,7 @@ attribute name, or a non-number value, is rejected with `400`.
   to create the resources below.
 - [Terraform](https://developer.hashicorp.com/terraform) **>= 1.10** (needed for the
   S3 native state-lockfile feature used here).
-- AWS CLI (for the one-time bootstrap step and for retrieving the API key value).
+- AWS CLI (for the one-time bootstrap step).
 - Region: `us-east-2` (Ohio) by default.
 
 ## One-time setup: Terraform state bucket
@@ -95,75 +95,35 @@ terraform plan
 terraform apply
 ```
 
-Terraform will print `invoke_url`, `api_key_id`, `table_name`, and `twilio_webhook_url`
-when it finishes. In the Twilio console, set the phone number's "A message comes in"
-webhook to `twilio_webhook_url`, method **HTTP POST**.
-
-## Retrieve your API key value
-
-The output only gives you the key's *ID*. Fetch the actual secret value:
-
-```bash
-aws apigateway get-api-key --api-key <api_key_id> --include-value --region us-east-2 \
-  --query value --output text
-```
-
-Save it somewhere safe (e.g. a password manager or local `.env` you don't commit).
+Terraform will print `invoke_url`, `table_name`, and `twilio_webhook_url` when it
+finishes. In the Twilio console, set the phone number's "A message comes in" webhook to
+`twilio_webhook_url`, method **HTTP POST**.
 
 ## Usage examples
 
-Set these once:
+Set this once:
 
 ```bash
 API_URL="<invoke_url from terraform output>"   # e.g. https://abc123.execute-api.us-east-2.amazonaws.com/prod
-API_KEY="<value from the get-api-key command above>"
 ```
 
-**Create/upsert a record**
-```bash
-curl -X POST "$API_URL/records" \
-  -H "x-api-key: $API_KEY" -H "Content-Type: application/json" \
-  -d '{"date":"2026-07-16","weight":175.5,"calories":2200,"hours_worked":8}'
-```
-
-**Get a single day** (public, no key needed)
+**Get a single day**
 ```bash
 curl "$API_URL/records/2026-07-16"
 ```
 
-**List all records** (public, no key needed)
+**List all records**
 ```bash
 curl "$API_URL/records"
 ```
 
-**List records in a date range** (public, no key needed)
+**List records in a date range**
 ```bash
 curl "$API_URL/records?start=2026-07-01&end=2026-07-31"
 ```
 
-**Merge/patch specific attributes (leaves others untouched)**
-```bash
-curl -X PATCH "$API_URL/records/2026-07-16" \
-  -H "x-api-key: $API_KEY" -H "Content-Type: application/json" \
-  -d '{"weight":174}'
-```
-
-**Fully replace a day's attributes**
-```bash
-curl -X PUT "$API_URL/records/2026-07-16" \
-  -H "x-api-key: $API_KEY" -H "Content-Type: application/json" \
-  -d '{"weight":174,"calories":2100}'
-```
-
-**Remove a single attribute**
-```bash
-curl -X DELETE "$API_URL/records/2026-07-16/notes" -H "x-api-key: $API_KEY"
-```
-
-**Delete an entire day's record**
-```bash
-curl -X DELETE "$API_URL/records/2026-07-16" -H "x-api-key: $API_KEY"
-```
+Writing data has no HTTP endpoint — the only way to add or edit a record is by texting
+the Twilio number.
 
 **Text the Twilio number**
 
@@ -191,16 +151,16 @@ npm run dev
 
 Visualizes: the current week's raw values, an all-time hours split donut, trend lines
 for hours worked/weight/calories, all-time weekday averages, and a date picker for any
-single day's record. Fetches `GET /records` once (public, no key) and derives
-everything client-side.
+single day's record. Fetches `GET /records` once (public) and derives everything
+client-side.
 
 ## Notes
 
-- Writes (`POST`/`PUT`/`PATCH`/`DELETE`) require a valid `x-api-key` header and are
-  rejected by API Gateway with 403 before ever reaching the Lambda. `GET` is public.
+- `GET` is the only HTTP method exposed by API Gateway; there is no write endpoint and
+  no API key. Writing data is only possible by texting the Twilio number.
 - Only the five fixed attributes above may be written — any other attribute name, or a
-  non-number value, is rejected with 400 (enforced in `src/handler.py`, the single
-  choke point for both the HTTP API and the Twilio/SMS path).
+  non-number value, is rejected with 400 (enforced in `src/handler.py`, which SMS
+  invokes directly via `lambda:InvokeFunction`, bypassing API Gateway).
 - `GET /records` uses a DynamoDB `Scan` (no pagination) — fine at personal-data volumes.
 - The Twilio webhook (`POST /twilio`) validates `X-Twilio-Signature` and rejects
   requests that don't come from Twilio with a 403, before any Bedrock or DynamoDB work
