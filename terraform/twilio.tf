@@ -63,17 +63,16 @@ resource "aws_iam_role_policy_attachment" "twilio_webhook_basic_execution" {
   policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
 }
 
-# Scoped to the configured model plus any inference profile in this account
-# (some Bedrock Claude models are only invocable via a cross-region
-# inference-profile ARN rather than the bare foundation-model ARN).
+# A "us."-prefixed cross-region inference profile (the current
+# bedrock_model_id default) fans requests out to backing foundation-model
+# ARNs in multiple regions (observed: us-east-1, though it can route to
+# others) that can't be reliably enumerated in advance, so this is scoped by
+# action only (bedrock:InvokeModel), not by resource.
 data "aws_iam_policy_document" "bedrock_invoke" {
   statement {
-    effect  = "Allow"
-    actions = ["bedrock:InvokeModel"]
-    resources = [
-      "arn:aws:bedrock:${var.aws_region}::foundation-model/${var.bedrock_model_id}",
-      "arn:aws:bedrock:${var.aws_region}:*:inference-profile/*",
-    ]
+    effect    = "Allow"
+    actions   = ["bedrock:InvokeModel"]
+    resources = ["*"]
   }
 }
 

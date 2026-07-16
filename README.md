@@ -13,6 +13,14 @@ Gateway and backed by a single Python Lambda. Provisioned entirely with Terrafor
 - **API Gateway** (REST API): a single `ANY /{proxy+}` catch-all forwards everything to
   the Lambda. Every request requires an `x-api-key` header (API Gateway API key + usage
   plan).
+- **Twilio SMS webhook** (`src/twilio_handler.py`, Python 3.12): a second Lambda behind
+  `POST /twilio` on the same API (no API key -- Twilio can't send one; the request is
+  instead authenticated via the `X-Twilio-Signature` header). Texting the Twilio number
+  something like "worked 8 hours today" calls Claude Haiku on Bedrock, which uses a
+  tool to invoke the `records-api` Lambda directly (not over HTTP, so the API key never
+  has to be shared with Twilio) to upsert that day's DynamoDB record, then replies via
+  SMS (TwiML) with a summary. Relative dates ("today", "yesterday") are resolved
+  server-side using the `timezone` Terraform variable.
 
 ## Prerequisites
 
@@ -35,6 +43,35 @@ aws s3 mb s3://YOUR-UNIQUE-STATE-BUCKET-NAME --region us-east-2
 Then edit `terraform/backend.tf` and replace `REPLACE_WITH_YOUR_STATE_BUCKET_NAME` with
 the bucket name you just created.
 
+## Twilio SMS webhook setup (one-time, before deploying)
+
+The Twilio webhook needs a few things Terraform can't provision for you:
+
+1. A Twilio account with a phone number, and its **Auth Token** (Twilio console ->
+   Account -> API keys & tokens).
+2. **Bedrock model access enabled** for Claude Haiku in your AWS account, in the same
+   region as this stack (`us-east-2` by default) -- Bedrock requires an explicit
+   per-model access grant in the console before `InvokeModel` will succeed. This can't
+   be done via Terraform.
+3. The exact **Bedrock model ID** for Claude Haiku available in your account/region --
+   verify it against your account's enabled models list in the Bedrock console rather
+   than assuming the default in `terraform/variables.tf` (`bedrock_model_id`) is
+   correct; update it if it doesn't match.
+4. Your **timezone**, if `America/New_York` (the default for `timezone` in
+   `terraform/variables.tf`) isn't right -- this is used to resolve "today"/"yesterday"
+   in incoming texts.
+
+Create `terraform/terraform.tfvars` (gitignored -- never commit it) with at least:
+
+```hcl
+twilio_auth_token = "your-twilio-auth-token"
+# timezone         = "America/Los_Angeles"          # optional override
+# bedrock_model_id = "anthropic.claude-haiku-..."   # optional override
+```
+
+(Alternatively, set `TF_VAR_twilio_auth_token` in your shell instead of a `.tfvars`
+file.)
+
 ## Deploy
 
 ```bash
@@ -44,7 +81,9 @@ terraform plan
 terraform apply
 ```
 
-Terraform will print `invoke_url`, `api_key_id`, and `table_name` when it finishes.
+Terraform will print `invoke_url`, `api_key_id`, `table_name`, and `twilio_webhook_url`
+when it finishes. In the Twilio console, set the phone number's "A message comes in"
+webhook to `twilio_webhook_url`, method **HTTP POST**.
 
 ## Retrieve your API key value
 
@@ -112,6 +151,19 @@ curl -X DELETE "$API_URL/records/2026-07-16/notes" -H "x-api-key: $API_KEY"
 curl -X DELETE "$API_URL/records/2026-07-16" -H "x-api-key: $API_KEY"
 ```
 
+**Text the Twilio number**
+
+Once the webhook is configured, just text the number, e.g.:
+
+```
+worked 8 hours today
+```
+```
+i worked 8 hours yesterday, forgot to log it
+```
+
+You'll get an SMS reply summarizing what was recorded for that date.
+
 ## Notes
 
 - Requests without a valid `x-api-key` header are rejected by API Gateway with 403
@@ -119,4 +171,7 @@ curl -X DELETE "$API_URL/records/2026-07-16" -H "x-api-key: $API_KEY"
 - Any JSON attribute name/value is accepted — `weight`, `calories`, `hoursWorked`, and
   `notes` are just the ones this project was built around, not a fixed schema.
 - `GET /records` uses a DynamoDB `Scan` (no pagination) — fine at personal-data volumes.
+- The Twilio webhook (`POST /twilio`) validates `X-Twilio-Signature` and rejects
+  requests that don't come from Twilio with a 403, before any Bedrock or DynamoDB work
+  happens.
 - To tear everything down: `terraform destroy` from the `terraform/` directory.
